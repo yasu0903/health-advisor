@@ -4,6 +4,10 @@
     "lib": ["ES2022"],
     "module": "ES2022",
     "moduleResolution": "Bundler",
+    // 依存(agents / workers-oauth-provider)が @cloudflare/workers-types v4 で
+    // ビルドされているため、プロジェクト全体もこれを単一の型ソースにして整合させる。
+    // wrangler v4 の `wrangler types` が生成する worker-configuration.d.ts は
+    // v5系ランタイム型を含み Headers 等が二重化・衝突するため include しない。
     "types": ["@cloudflare/workers-types"],
     "resolveJsonModule": true,
     "allowJs": true,
@@ -16,6 +20,6 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "worker-configuration.d.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules"]
 }
