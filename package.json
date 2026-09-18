@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "description": "Google Health API 連携 MCP サーバー (Cloudflare Workers, リモート/ローカル両対応)",
   "private": true,
+  "license": "MIT",
+  "author": "yasuch",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
