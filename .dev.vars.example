@@ -1,0 +1,10 @@
+# ローカル開発用の秘密情報。これを `.dev.vars` にコピーして値を埋める。
+# `.dev.vars` は .gitignore 済み（コミットしないこと）。
+
+# Google Cloud Console で作成した OAuth クライアント（ウェブアプリケーション）の認証情報
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+
+# workers-oauth-provider が承認Cookieの暗号化に使うランダムな鍵
+# 例: `openssl rand -hex 32` で生成
+COOKIE_ENCRYPTION_KEY=replace-with-32-byte-random-hex

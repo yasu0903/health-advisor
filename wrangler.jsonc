@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "health-advisor",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  // McpAgent はユーザー単位のセッション状態を Durable Object で保持する
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MCP_OBJECT",
+        "class_name": "HealthMCP"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["HealthMCP"]
+    }
+  ],
+  // workers-oauth-provider が発行するトークン/認可グラントの保存先
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "<REPLACE_WITH_KV_NAMESPACE_ID>"
+    }
+  ],
+  "vars": {
+    // 秘密でない設定のみ。CLIENT_ID/SECRET と COOKIE_ENCRYPTION_KEY は
+    // ローカルは .dev.vars、本番は `wrangler secret put` で設定する。
+    "GOOGLE_OAUTH_SCOPES": "openid email profile https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly https://www.googleapis.com/auth/googlehealth.sleep.readonly"
+  }
+}
