@@ -7,9 +7,12 @@
   "author": "yasuch",
   "type": "module",
   "scripts": {
+    "setup": "bash scripts/setup.sh",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:auto": "bash scripts/deploy.sh",
+    "deploy:check": "bash scripts/deploy.sh --dry-run",
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "inspector": "npx @modelcontextprotocol/inspector"

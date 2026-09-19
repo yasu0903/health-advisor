@@ -34,11 +34,22 @@ Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サ�
 
 ## セットアップ
 
+### クイックスタート
+
+```bash
+./scripts/setup.sh    # = npm run setup（依存インストール + .dev.vars 生成）
+```
+
+Google Cloud 側の準備（次の「2.」）だけは Console での手作業が必要です。
+以下の 1 / 3 / 4 はスクリプトが肩代わりするので、中身を知りたい場合だけ読んでください。
+
 ### 1. 依存インストール
 
 ```bash
 npm install
 ```
+
+> `./scripts/setup.sh` が自動で実行します。
 
 ### 2. Google Cloud 側の準備
 
@@ -71,12 +82,18 @@ cp .dev.vars.example .dev.vars
 # COOKIE_ENCRYPTION_KEY は: openssl rand -hex 32
 ```
 
+> `./scripts/setup.sh` が `.dev.vars` を生成し、`COOKIE_ENCRYPTION_KEY` も自動生成します
+> （既存の `.dev.vars` は上書きしません）。クライアント ID / シークレットだけ記入してください。
+
 ### 4. KV ネームスペース作成（本番デプロイ時）
 
 ```bash
 npx wrangler kv namespace create OAUTH_KV
 # 出力された id を wrangler.jsonc の kv_namespaces[].id に貼る
 ```
+
+> `./scripts/deploy.sh` が「既存を検索 → 無ければ作成 → id を埋めた設定を生成」まで
+> 自動でやるので、手動で貼る必要はありません（`wrangler.jsonc` も書き換えません）。
 
 ローカルの `wrangler dev` はローカルエミュレートされた KV を使うため、
 疎通確認だけなら id はダミーのままでも動きます。
@@ -120,13 +137,47 @@ URL に `http://localhost:8787/mcp` を指定して接続 → Google のログ�
 ## Cloudflare にデプロイ
 
 ```bash
-# 秘密情報を本番に登録
+npm run deploy:auto     # = ./scripts/deploy.sh
+```
+
+このスクリプトは以下を順に実行します（何度実行しても同じ結果になります）:
+
+1. Cloudflare へのログイン状態を確認
+2. `.dev.vars` に必要な 3 つのシークレットが揃っているか検証
+3. `npm run typecheck`（型エラーのあるコードをデプロイしない）
+4. KV ネームスペースを検索し、無ければ作成して id を解決
+5. id を埋めた `wrangler.generated.jsonc` を生成（`wrangler.jsonc` は変更しない）
+6. `wrangler deploy --secrets-file` でシークレットごとアップロード
+7. 払い出された URL と、この後必要な手作業を表示
+
+アップロードせず検証だけしたい場合:
+
+```bash
+npm run deploy:check    # = ./scripts/deploy.sh --dry-run
+```
+
+主な環境変数:
+
+| 変数 | 既定値 | 用途 |
+| --- | --- | --- |
+| `SECRETS_FILE` | `.dev.vars` | シークレットを読むファイル（`.env` 形式）。本番用に分けるなら `.env.production` など |
+| `OAUTH_KV_ID` | （自動解決） | KV ネームスペース ID を明示指定する |
+| `KV_TITLE` | `health-advisor-OAUTH_KV` | 検索/作成する KV ネームスペース名 |
+| `SKIP_TYPECHECK` | — | `1` で型チェックを飛ばす |
+
+<details>
+<summary>手動でデプロイする場合</summary>
+
+```bash
+# wrangler.jsonc の kv_namespaces[].id を実 id に書き換えたうえで
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put COOKIE_ENCRYPTION_KEY
 
 npm run deploy
 ```
+
+</details>
 
 デプロイ後:
 
@@ -182,6 +233,9 @@ src/
   mcp.ts            McpAgent と読み取り専用ツール
   google-health.ts  Google Health API クライアント
   types.ts          共有型
+scripts/
+  setup.sh          初回セットアップ（依存インストール + .dev.vars 生成）
+  deploy.sh         デプロイ自動化（KV 解決 + 型チェック + シークレット投入 + deploy）
 wrangler.jsonc      Worker 設定
 ```
 

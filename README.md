@@ -34,11 +34,22 @@ It deploys to **Cloudflare Workers** and **runs locally from the same code** wit
 
 ## Setup
 
+### Quick start
+
+```bash
+./scripts/setup.sh    # = npm run setup (installs dependencies and creates .dev.vars)
+```
+
+Only step 2 below (the Google Cloud side) has to be done by hand in the Console.
+Steps 1, 3 and 4 are handled by the scripts — read them only if you want to know what happens.
+
 ### 1. Install dependencies
 
 ```bash
 npm install
 ```
+
+> `./scripts/setup.sh` does this for you.
 
 ### 2. Prepare your Google Cloud project
 
@@ -72,12 +83,18 @@ cp .dev.vars.example .dev.vars
 # Generate COOKIE_ENCRYPTION_KEY with: openssl rand -hex 32
 ```
 
+> `./scripts/setup.sh` creates `.dev.vars` and generates `COOKIE_ENCRYPTION_KEY` for you
+> (an existing `.dev.vars` is never overwritten). You only have to fill in the client ID and secret.
+
 ### 4. Create a KV namespace (for production deployments)
 
 ```bash
 npx wrangler kv namespace create OAUTH_KV
 # Paste the returned id into kv_namespaces[].id in wrangler.jsonc
 ```
+
+> `./scripts/deploy.sh` looks up the namespace, creates it if missing and fills the id into a
+> generated config, so you never have to paste it by hand (and `wrangler.jsonc` stays untouched).
 
 `wrangler dev` uses a locally emulated KV store, so a dummy id is fine if you only want to try
 things out locally.
@@ -122,13 +139,47 @@ Add this in Settings → Developer → Edit Config, then restart:
 ## Deploying to Cloudflare
 
 ```bash
-# Register the secrets for production
+npm run deploy:auto     # = ./scripts/deploy.sh
+```
+
+The script runs these steps in order, and is idempotent — running it again is always safe:
+
+1. Check that you are logged in to Cloudflare
+2. Verify that all three secrets are present in `.dev.vars`
+3. Run `npm run typecheck`, so code that does not compile never gets deployed
+4. Look up the KV namespace, creating it if it does not exist yet
+5. Write the resolved id into a generated `wrangler.generated.jsonc` (`wrangler.jsonc` is left alone)
+6. Upload the Worker together with its secrets via `wrangler deploy --secrets-file`
+7. Print the deployed URL and the manual steps that are still left
+
+To validate everything without uploading:
+
+```bash
+npm run deploy:check    # = ./scripts/deploy.sh --dry-run
+```
+
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRETS_FILE` | `.dev.vars` | File to read secrets from (`.env` format). Use e.g. `.env.production` for separate production values |
+| `OAUTH_KV_ID` | (auto-resolved) | Pin the KV namespace id explicitly |
+| `KV_TITLE` | `health-advisor-OAUTH_KV` | Name of the KV namespace to look up or create |
+| `SKIP_TYPECHECK` | — | Set to `1` to skip the type check |
+
+<details>
+<summary>Deploying manually</summary>
+
+```bash
+# After replacing kv_namespaces[].id in wrangler.jsonc with the real id
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put COOKIE_ENCRYPTION_KEY
 
 npm run deploy
 ```
+
+</details>
 
 After deploying:
 
@@ -185,6 +236,9 @@ src/
   mcp.ts            McpAgent and the read-only tools
   google-health.ts  Google Health API client
   types.ts          shared types
+scripts/
+  setup.sh          first-time setup (dependencies + .dev.vars)
+  deploy.sh         deploy automation (KV lookup, type check, secrets, deploy)
 wrangler.jsonc      Worker configuration
 ```
 
