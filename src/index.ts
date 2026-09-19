@@ -7,7 +7,7 @@
  *   - defaultHandler(GoogleHandler) → 上流 Google OAuth (/authorize, /callback)
  * を束ねる。
  *
- * ローカル: `wrangler dev` (http://localhost:8788)
+ * ローカル: `wrangler dev` (http://localhost:8787)
  * 本番:    `wrangler deploy`
  */
 

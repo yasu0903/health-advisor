@@ -5,19 +5,59 @@
  * - 一時エラー(429/5xx): 指数バックオフでリトライ。
  * - レート制限は公式に非公開のため、控えめなリトライ設定にしている。
  *
- * データ取得はすべて次の形のエンドポイントに集約される:
- *   GET /v4/users/me/dataTypes/{dataType}/dataPoints:{method}
- * method は list / reconcile / rollUp / dailyRollUp のいずれか。
+ * エンドポイントは公式 discovery ドキュメント
+ * (https://health.googleapis.com/$discovery/rest?version=v4) の定義に従う。
+ * メソッドごとに HTTP メソッドとパラメータの渡し方が違う点に注意:
  *
- * NOTE: クエリパラメータ名(startTime/endTime 等)は Google Health API の
- * 公式リファレンスに合わせて調整可能なよう、呼び出し側から任意に渡せる設計にしている。
- * 実データで疎通確認する際はここのパラメータ名を必要に応じて見直すこと。
+ *   list        GET  .../dataTypes/{dataType}/dataPoints              ?filter=...
+ *   reconcile   GET  .../dataTypes/{dataType}/dataPoints:reconcile    ?filter=...
+ *   rollUp      POST .../dataTypes/{dataType}/dataPoints:rollUp       body {range, windowSize}
+ *   dailyRollUp POST .../dataTypes/{dataType}/dataPoints:dailyRollUp  body {range, windowSizeDays}
+ *
+ * list だけはコロン付きサブメソッドではなく、コレクションへの素の GET である
+ * (`dataPoints:list` というルートは存在せず 404 になる)。
  */
 
 const HEALTH_API_BASE = "https://health.googleapis.com/v4";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
 export type ReadMethod = "list" | "reconcile" | "rollUp" | "dailyRollUp";
+
+/** google.type.Interval 相当（物理時刻・start 含む / end 含まない） */
+export interface Interval {
+  startTime: string;
+  endTime: string;
+}
+
+/** CivilDateTime 相当（タイムゾーンを持たない暦時刻） */
+export interface CivilDateTime {
+  date: { year: number; month: number; day: number };
+}
+
+/** CivilTimeInterval 相当（start 含む / end 含まない） */
+export interface CivilTimeInterval {
+  start: CivilDateTime;
+  end: CivilDateTime;
+}
+
+/** 読み取り条件。メソッドごとに使うフィールドが異なる。 */
+export interface ReadOptions {
+  /** list / reconcile: AIP-160 のフィルタ式 */
+  filter?: string;
+  /** rollUp: 集計対象の物理時刻範囲 */
+  range?: Interval;
+  /** dailyRollUp: 集計対象の暦時刻範囲 */
+  civilRange?: CivilTimeInterval;
+  /** rollUp: 集計窓（google-duration, 例 "3600s"） */
+  windowSize?: string;
+  /** dailyRollUp: 集計窓（日数, 既定 1） */
+  windowSizeDays?: number;
+  /** 1 ページあたり件数。sleep / exercise は最大 25、その他は最大 10000。 */
+  pageSize?: number;
+  pageToken?: string;
+  /** list 以外で指定可能なデータソース絞り込み */
+  dataSourceFamily?: string;
+}
 
 export interface GoogleHealthClientOptions {
   accessToken: string;
@@ -56,37 +96,80 @@ export class GoogleHealthClient {
 
   /**
    * 指定データ型を指定メソッドで読み取る。
-   * @param dataType 例: "com.google.step_count.delta" 相当の Google Health データ型 ID
-   * @param method   list / reconcile / rollUp / dailyRollUp
-   * @param query    エンドポイントへ渡すクエリパラメータ
+   * メソッドごとに HTTP メソッド・パラメータ位置を discovery の定義に合わせて振り分ける。
    */
   async readDataPoints(
     dataType: string,
     method: ReadMethod,
-    query: Record<string, string> = {},
+    opts: ReadOptions = {},
   ): Promise<unknown> {
-    const params = new URLSearchParams(query);
-    const qs = params.toString();
-    const path = `/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:${method}`;
-    const url = `${HEALTH_API_BASE}${path}${qs ? `?${qs}` : ""}`;
-    return this.request(url);
+    const parent = `/users/me/dataTypes/${encodeURIComponent(dataType)}`;
+
+    if (method === "list" || method === "reconcile") {
+      const query: Record<string, string> = {};
+      if (opts.filter) query.filter = opts.filter;
+      if (opts.pageSize !== undefined) query.pageSize = String(opts.pageSize);
+      if (opts.pageToken) query.pageToken = opts.pageToken;
+      // dataSourceFamily は reconcile のみ受け付ける
+      if (method === "reconcile" && opts.dataSourceFamily) {
+        query.dataSourceFamily = opts.dataSourceFamily;
+      }
+      const suffix = method === "list" ? "/dataPoints" : "/dataPoints:reconcile";
+      return this.requestJson("GET", `${parent}${suffix}`, query);
+    }
+
+    // rollUp / dailyRollUp は POST。範囲と集計窓はボディで渡す。
+    const body: Record<string, unknown> = {};
+    if (opts.pageSize !== undefined) body.pageSize = opts.pageSize;
+    if (opts.pageToken) body.pageToken = opts.pageToken;
+    if (opts.dataSourceFamily) body.dataSourceFamily = opts.dataSourceFamily;
+
+    if (method === "rollUp") {
+      if (!opts.range) throw new Error("rollUp には range が必要です");
+      if (!opts.windowSize) throw new Error("rollUp には windowSize が必要です");
+      body.range = opts.range;
+      body.windowSize = opts.windowSize;
+      return this.requestJson("POST", `${parent}/dataPoints:rollUp`, {}, body);
+    }
+
+    if (!opts.civilRange) throw new Error("dailyRollUp には civilRange が必要です");
+    body.range = opts.civilRange;
+    if (opts.windowSizeDays !== undefined) body.windowSizeDays = opts.windowSizeDays;
+    return this.requestJson("POST", `${parent}/dataPoints:dailyRollUp`, {}, body);
   }
 
   /** 任意の v4 相対パスに対する GET（拡張用） */
   async get(relativePath: string, query: Record<string, string> = {}): Promise<unknown> {
-    const params = new URLSearchParams(query);
-    const qs = params.toString();
-    const url = `${HEALTH_API_BASE}${relativePath}${qs ? `?${qs}` : ""}`;
-    return this.request(url);
+    return this.requestJson("GET", relativePath, query);
   }
 
-  private async request(url: string, attempt = 0): Promise<unknown> {
+  private requestJson(
+    httpMethod: "GET" | "POST",
+    relativePath: string,
+    query: Record<string, string> = {},
+    body?: unknown,
+  ): Promise<unknown> {
+    const qs = new URLSearchParams(query).toString();
+    const url = `${HEALTH_API_BASE}${relativePath}${qs ? `?${qs}` : ""}`;
+    return this.request(httpMethod, url, body);
+  }
+
+  private async request(
+    httpMethod: "GET" | "POST",
+    url: string,
+    body?: unknown,
+    attempt = 0,
+  ): Promise<unknown> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.accessToken}`,
+      Accept: "application/json",
+    };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+
     const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${this.accessToken}`,
-        Accept: "application/json",
-      },
+      method: httpMethod,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
 
     if (res.ok) {
@@ -97,7 +180,7 @@ export class GoogleHealthClient {
     if (res.status === 401 && attempt === 0 && this.refreshToken) {
       const refreshed = await this.refreshAccessToken();
       if (refreshed) {
-        return this.request(url, attempt + 1);
+        return this.request(httpMethod, url, body, attempt + 1);
       }
     }
 
@@ -108,14 +191,14 @@ export class GoogleHealthClient {
         ? retryAfter * 1000
         : 2 ** attempt * 500;
       await sleep(backoffMs);
-      return this.request(url, attempt + 1);
+      return this.request(httpMethod, url, body, attempt + 1);
     }
 
-    const body = await safeReadBody(res);
+    const detail = await safeReadBody(res);
     throw new GoogleHealthError(
       `Google Health API request failed (${res.status} ${res.statusText})`,
       res.status,
-      body,
+      detail,
     );
   }
 

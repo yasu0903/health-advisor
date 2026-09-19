@@ -12,9 +12,9 @@ Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サ�
 > クラウドからデータを引ける **Google Health API** を採用しています。
 
 > 🚧 **Status: experimental（実験段階）**
-> Google Health API の実データに対する検証はこれからの段階です。`src/mcp.ts` の
-> データ型 ID や時間クエリ名は[公式リファレンス](https://developers.google.com/health/reference/rest)
-> に合わせて調整が必要な場合があります。**セルフホストの個人利用**を前提としています。
+> エンドポイントとデータ型 ID は公式 discovery ドキュメント (revision 20260916) に
+> 突き合わせ済みですが、実データでの全ツール検証は道半ばです。
+> **セルフホストの個人利用**を前提としています。
 
 ---
 
@@ -52,7 +52,7 @@ npm install
      - `openid` / `email` / `profile`
 4. **OAuth クライアント ID** を作成（種別: **ウェブアプリケーション**）
    - 承認済みリダイレクト URI に**両方**を登録:
-     - ローカル: `http://localhost:8788/callback`
+     - ローカル: `http://localhost:8787/callback`
      - 本番: `https://<your-worker>.workers.dev/callback`
    - 発行された **クライアント ID / シークレット**を控える
 
@@ -84,7 +84,7 @@ npx wrangler kv namespace create OAUTH_KV
 ## ローカルで動かす
 
 ```bash
-npm run dev          # = wrangler dev, http://localhost:8788
+npm run dev          # = wrangler dev, http://localhost:8787
 ```
 
 ### MCP Inspector で疎通確認
@@ -93,7 +93,10 @@ npm run dev          # = wrangler dev, http://localhost:8788
 npm run inspector    # = npx @modelcontextprotocol/inspector
 ```
 
-Inspector で `http://localhost:8788/sse` に接続 → Google のログイン/同意を完了 → 各ツールを実行。
+Inspector (`http://localhost:6274`) で **Add server** → Transport に `streamable-http`、
+URL に `http://localhost:8787/mcp` を指定して接続 → Google のログイン/同意を完了 → 各ツールを実行。
+
+> `/sse` も残していますが、Inspector 上では SSE は非推奨表示になります。新規は `/mcp` を使ってください。
 
 ### Claude Desktop（ローカルサーバーに接続）
 
@@ -104,7 +107,7 @@ Inspector で `http://localhost:8788/sse` に接続 → Google のログイン/�
   "mcpServers": {
     "health-advisor": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8788/sse"]
+      "args": ["mcp-remote", "http://localhost:8787/sse"]
     }
   }
 }
@@ -145,11 +148,24 @@ Claude に以下のように尋ねる:
 
 ## 実装メモ・既知の注意点
 
-- **データ型 ID の確定**: `src/mcp.ts` の `DATA_TYPES` にある `dataType` 文字列は、
-  実データ疎通時に [Google Health API リファレンス](https://developers.google.com/health/reference/rest)
-  に合わせて確認・調整してください（この表を直すだけで全ツールに反映されます）。
-- **クエリパラメータ名**: `src/google-health.ts` は時間範囲パラメータを呼び出し側から
-  自由に渡せる設計です。API の仕様に合わせて `src/mcp.ts` 側で調整できます。
+- **エンドポイントの正**: 実装は公式 discovery ドキュメント
+  (`https://health.googleapis.com/$discovery/rest?version=v4`) の定義に従っています。
+  メソッドごとに HTTP メソッドとパラメータの渡し方が異なる点に注意:
+
+  | メソッド | HTTP | パス | 範囲指定 |
+  | --- | --- | --- | --- |
+  | `list` | GET | `.../dataPoints` | `filter` クエリ |
+  | `reconcile` | GET | `.../dataPoints:reconcile` | `filter` クエリ |
+  | `rollUp` | POST | `.../dataPoints:rollUp` | ボディ `{range, windowSize}` |
+  | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | ボディ `{range, windowSizeDays}` |
+
+  `list` はコロン付きサブメソッドではなくコレクションへの素の GET です
+  (`dataPoints:list` というルートは存在せず 404 になります)。
+- **フィルタ式のフィールド名**: URL パスは kebab-case (`heart-rate`)、
+  AIP-160 のフィルタ式は snake_case (`heart_rate.sample_time.physical_time`) を使います。
+  期間を持つ型は `{type}.interval.start_time`、瞬間値は `{type}.sample_time.physical_time`。
+  **睡眠だけは開始時刻で絞り込めず** `sleep.interval.end_time` を使います。
+- **ページサイズ**: `sleep` と `exercise` は最大 25 件、その他のデータ型は最大 10000 件です。
 - **レート制限**: 公式に非公開のため、クライアントは指数バックオフ付きリトライを実装しています。
   初期はツール呼び出し頻度を控えめに。
 - **Fitbit → Google 連携**: データが Google Health API に現れるには、
