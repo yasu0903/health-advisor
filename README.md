@@ -1,106 +1,110 @@
-# Health Advisor — Google Health API 連携 MCP サーバー
+# Health Advisor — an MCP server for the Google Health API
 
-自分の健康データ（Fitbit アカウント経由）を **Google Health API** から取得し、
-Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サーバーです。
-**Cloudflare Workers** にデプロイでき、**ローカル（`wrangler dev`）でも同じコードで動作**します。
+**English** | [日本語](./README_ja.md)
 
-- データ源: **Fitbit アカウント**（Pixel Watch も可）
-- 取得対象: **アクティビティ全般 + 睡眠**（読み取り専用）
-- API: `https://health.googleapis.com/v4`（Google Fit REST API の後継。Fit は 2026 年末終了）
+An MCP server that reads your own health data (via your Fitbit account) from the
+**Google Health API** and exposes it read-only to Claude (Desktop / Mobile / Web).
+It deploys to **Cloudflare Workers** and **runs locally from the same code** with `wrangler dev`.
 
-> ⚠️ **Health Connect は Android 端末内オンリー（クラウド REST なし）** のため使いません。
-> クラウドからデータを引ける **Google Health API** を採用しています。
+- Data source: **your Fitbit account** (Pixel Watch works too)
+- Coverage: **general activity + sleep** (read-only)
+- API: `https://health.googleapis.com/v4` (successor to the Google Fit REST API, which shuts down at the end of 2026)
 
-> 🚧 **Status: experimental（実験段階）**
-> エンドポイントとデータ型 ID は公式 discovery ドキュメント (revision 20260916) に
-> 突き合わせ済みですが、実データでの全ツール検証は道半ばです。
-> **セルフホストの個人利用**を前提としています。
+> ⚠️ **Health Connect is on-device only on Android (no cloud REST API)**, so it is not used here.
+> This project uses the **Google Health API**, which can serve data from the cloud.
+
+> 🚧 **Status: experimental**
+> Endpoints and data type IDs have been checked against the official discovery document
+> (revision 20260916), but end-to-end verification of every tool against real data is still
+> in progress. This is intended for **self-hosted personal use**.
 
 ---
 
-## 提供する MCP ツール（すべて読み取り専用）
+## MCP tools (all read-only)
 
-| ツール | 説明 |
+| Tool | Description |
 | --- | --- |
-| `list_available_data_types` | 取得可能なデータ型と対応メソッドの一覧 |
-| `get_daily_activity_summary` | 日次サマリ（歩数/距離/カロリー/アクティブ時間/階数）を `dailyRollUp` で取得 |
-| `get_activity_datapoints` | 任意のアクティビティ型を柔軟に取得（`list`/`reconcile`/`rollUp`/`dailyRollUp`） |
-| `get_heart_rate` | 心拍データ（`list`/`rollUp`） |
-| `get_sleep_logs` | 睡眠ログ（睡眠ステージ含む） |
+| `list_available_data_types` | Lists the available data types and the methods each one supports |
+| `get_daily_activity_summary` | Daily summary (steps / distance / calories / active minutes / floors) via `dailyRollUp` |
+| `get_activity_datapoints` | Flexible access to any activity type (`list` / `reconcile` / `rollUp` / `dailyRollUp`) |
+| `get_heart_rate` | Heart rate data (`list` / `rollUp`) |
+| `get_sleep_logs` | Sleep logs, including sleep stages |
 
 ---
 
-## セットアップ
+## Setup
 
-### 1. 依存インストール
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 2. Google Cloud 側の準備
+### 2. Prepare your Google Cloud project
 
-1. [Google Cloud Console](https://console.cloud.google.com/) で新規プロジェクトを作成
-2. **Google Health API** を有効化（API とサービス → ライブラリ → "Health"）
-3. **OAuth 同意画面**を構成
-   - User Type: **External**
-   - 公開ステータス: **テスト（Testing）**
-   - **テストユーザーに自分の Google アカウントを追加**
-   - スコープに以下を追加:
+1. Create a new project in the [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the **Google Health API** (APIs & Services → Library → search for "Health")
+3. Configure the **OAuth consent screen**
+   - User type: **External**
+   - Publishing status: **Testing**
+   - **Add your own Google account as a test user**
+   - Add these scopes:
      - `.../auth/googlehealth.activity_and_fitness.readonly`
      - `.../auth/googlehealth.sleep.readonly`
      - `openid` / `email` / `profile`
-4. **OAuth クライアント ID** を作成（種別: **ウェブアプリケーション**）
-   - 承認済みリダイレクト URI に**両方**を登録:
-     - ローカル: `http://localhost:8787/callback`
-     - 本番: `https://<your-worker>.workers.dev/callback`
-   - 発行された **クライアント ID / シークレット**を控える
+4. Create an **OAuth client ID** (type: **Web application**)
+   - Register **both** authorized redirect URIs:
+     - Local: `http://localhost:8787/callback`
+     - Production: `https://<your-worker>.workers.dev/callback`
+   - Keep the issued **client ID / client secret**
 
-> ℹ️ `googlehealth.*` は全て **Restricted スコープ**。本番公開には Google の審査が必要ですが、
-> **「テスト」ステータス + テストユーザー登録なら審査なしで個人利用できます**。
-> ただし **テストステータスではリフレッシュトークンが 7 日で失効**するため、
-> 定期的に再認証が必要です（長期運用は OAuth 審査申請を検討）。
+> ℹ️ All `googlehealth.*` scopes are **restricted scopes**. Publishing to production requires
+> Google's review, but you can use them for **personal use without review** by keeping the app in
+> **Testing** status and registering yourself as a test user.
+> Note that **in Testing status refresh tokens expire after 7 days**, so you have to re-authenticate
+> periodically (for long-running setups, consider applying for OAuth verification).
 
-### 3. 秘密情報の設定
+### 3. Configure secrets
 
 ```bash
 cp .dev.vars.example .dev.vars
-# .dev.vars を編集して GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / COOKIE_ENCRYPTION_KEY を記入
-# COOKIE_ENCRYPTION_KEY は: openssl rand -hex 32
+# Edit .dev.vars and fill in GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / COOKIE_ENCRYPTION_KEY
+# Generate COOKIE_ENCRYPTION_KEY with: openssl rand -hex 32
 ```
 
-### 4. KV ネームスペース作成（本番デプロイ時）
+### 4. Create a KV namespace (for production deployments)
 
 ```bash
 npx wrangler kv namespace create OAUTH_KV
-# 出力された id を wrangler.jsonc の kv_namespaces[].id に貼る
+# Paste the returned id into kv_namespaces[].id in wrangler.jsonc
 ```
 
-ローカルの `wrangler dev` はローカルエミュレートされた KV を使うため、
-疎通確認だけなら id はダミーのままでも動きます。
+`wrangler dev` uses a locally emulated KV store, so a dummy id is fine if you only want to try
+things out locally.
 
 ---
 
-## ローカルで動かす
+## Running locally
 
 ```bash
 npm run dev          # = wrangler dev, http://localhost:8787
 ```
 
-### MCP Inspector で疎通確認
+### Smoke-testing with the MCP Inspector
 
 ```bash
 npm run inspector    # = npx @modelcontextprotocol/inspector
 ```
 
-Inspector (`http://localhost:6274`) で **Add server** → Transport に `streamable-http`、
-URL に `http://localhost:8787/mcp` を指定して接続 → Google のログイン/同意を完了 → 各ツールを実行。
+In the Inspector (`http://localhost:6274`), choose **Add server**, set the transport to
+`streamable-http` and the URL to `http://localhost:8787/mcp`, connect, complete the Google
+sign-in/consent flow, then run the tools.
 
-> `/sse` も残していますが、Inspector 上では SSE は非推奨表示になります。新規は `/mcp` を使ってください。
+> `/sse` is still available, but the Inspector marks SSE as deprecated. Use `/mcp` for new setups.
 
-### Claude Desktop（ローカルサーバーに接続）
+### Claude Desktop (connecting to the local server)
 
-設定 → Developer → Edit Config に追記して再起動:
+Add this in Settings → Developer → Edit Config, then restart:
 
 ```json
 {
@@ -115,10 +119,10 @@ URL に `http://localhost:8787/mcp` を指定して接続 → Google のログ�
 
 ---
 
-## Cloudflare にデプロイ
+## Deploying to Cloudflare
 
 ```bash
-# 秘密情報を本番に登録
+# Register the secrets for production
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put COOKIE_ENCRYPTION_KEY
@@ -126,97 +130,100 @@ npx wrangler secret put COOKIE_ENCRYPTION_KEY
 npm run deploy
 ```
 
-デプロイ後:
+After deploying:
 
-1. Google Cloud の OAuth クライアントの承認済みリダイレクト URI に
-   `https://<your-worker>.workers.dev/callback` が入っていることを確認
-2. **Claude Mobile / Web**: 設定 → コネクタ → **カスタムコネクタを追加** →
-   `https://<your-worker>.workers.dev/sse` を登録 → OAuth ログイン
-3. **Claude Desktop（本番接続）**: 上記 config の URL を本番 URL に変更
-
----
-
-## 動作確認
-
-Claude に以下のように尋ねる:
-
-> 昨日の歩数と睡眠時間を教えて
-
-`get_daily_activity_summary` と `get_sleep_logs` が呼ばれ、Fitbit のデータが返れば成功です。
+1. Make sure `https://<your-worker>.workers.dev/callback` is listed as an authorized redirect URI
+   on your Google Cloud OAuth client
+2. **Claude Mobile / Web**: Settings → Connectors → **Add custom connector** →
+   register `https://<your-worker>.workers.dev/sse` → sign in with OAuth
+3. **Claude Desktop (production)**: change the URL in the config above to your production URL
 
 ---
 
-## 実装メモ・既知の注意点
+## Verifying it works
 
-- **エンドポイントの正**: 実装は公式 discovery ドキュメント
-  (`https://health.googleapis.com/$discovery/rest?version=v4`) の定義に従っています。
-  メソッドごとに HTTP メソッドとパラメータの渡し方が異なる点に注意:
+Ask Claude something like:
 
-  | メソッド | HTTP | パス | 範囲指定 |
+> How many steps did I take yesterday, and how long did I sleep?
+
+If `get_daily_activity_summary` and `get_sleep_logs` are called and return your Fitbit data,
+you're all set.
+
+---
+
+## Implementation notes and known caveats
+
+- **Source of truth for endpoints**: the implementation follows the official discovery document
+  (`https://health.googleapis.com/$discovery/rest?version=v4`). Note that the HTTP method and the
+  way the time range is passed differ per method:
+
+  | Method | HTTP | Path | Range |
   | --- | --- | --- | --- |
-  | `list` | GET | `.../dataPoints` | `filter` クエリ |
-  | `reconcile` | GET | `.../dataPoints:reconcile` | `filter` クエリ |
-  | `rollUp` | POST | `.../dataPoints:rollUp` | ボディ `{range, windowSize}` |
-  | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | ボディ `{range, windowSizeDays}` |
+  | `list` | GET | `.../dataPoints` | `filter` query parameter |
+  | `reconcile` | GET | `.../dataPoints:reconcile` | `filter` query parameter |
+  | `rollUp` | POST | `.../dataPoints:rollUp` | body `{range, windowSize}` |
+  | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | body `{range, windowSizeDays}` |
 
-  `list` はコロン付きサブメソッドではなくコレクションへの素の GET です
-  (`dataPoints:list` というルートは存在せず 404 になります)。
-- **フィルタ式のフィールド名**: URL パスは kebab-case (`heart-rate`)、
-  AIP-160 のフィルタ式は snake_case (`heart_rate.sample_time.physical_time`) を使います。
-  期間を持つ型は `{type}.interval.start_time`、瞬間値は `{type}.sample_time.physical_time`。
-  **睡眠だけは開始時刻で絞り込めず** `sleep.interval.end_time` を使います。
-- **ページサイズ**: `sleep` と `exercise` は最大 25 件、その他のデータ型は最大 10000 件です。
-- **レート制限**: 公式に非公開のため、クライアントは指数バックオフ付きリトライを実装しています。
-  初期はツール呼び出し頻度を控えめに。
-- **Fitbit → Google 連携**: データが Google Health API に現れるには、
-  Fitbit アカウントが Google と連携している必要がある場合があります。
+  `list` is a plain GET on the collection, not a colon-suffixed sub-method
+  (there is no `dataPoints:list` route — it returns 404).
+- **Field names in filter expressions**: URL paths use kebab-case (`heart-rate`), while AIP-160
+  filter expressions use snake_case (`heart_rate.sample_time.physical_time`). Types with a duration
+  use `{type}.interval.start_time`; instantaneous types use `{type}.sample_time.physical_time`.
+  **Sleep is the exception**: it cannot be filtered by start time, so `sleep.interval.end_time` is used.
+- **Page size**: `sleep` and `exercise` are capped at 25 items; other data types allow up to 10000.
+- **Rate limits**: they are not publicly documented, so the client implements retries with
+  exponential backoff. Keep tool calls infrequent at first.
+- **Fitbit → Google linkage**: your Fitbit account may need to be linked to Google before its data
+  shows up in the Google Health API.
 
-## ファイル構成
+## Project layout
 
 ```
 src/
-  index.ts          OAuthProvider の配線
+  index.ts          OAuthProvider wiring
   google-handler.ts Google OAuth (authorize / callback)
-  mcp.ts            McpAgent と読み取り専用ツール
-  google-health.ts  Google Health API クライアント
-  types.ts          共有型
-wrangler.jsonc      Worker 設定
+  mcp.ts            McpAgent and the read-only tools
+  google-health.ts  Google Health API client
+  types.ts          shared types
+wrangler.jsonc      Worker configuration
 ```
 
 ---
 
-## Google API 利用上の前提（重要）
+## Google API usage assumptions (important)
 
-- `googlehealth.*` は **Restricted スコープ**です。**利用者ごとに自分の Google Cloud
-  プロジェクトと OAuth クライアントを用意**し、OAuth 同意画面を **「テスト」モード**にして
-  **自分自身をテストユーザー**に登録する、**セルフホストの個人利用**を想定しています。
-- **不特定多数に使わせる形で公開デプロイする場合は、Google のセキュリティ審査（アセスメント）が
-  別途必要**になります。各自の責任で Google の規約・ポリシーを確認してください。
-- テストモードでは**リフレッシュトークンが 7 日で失効**します（定期的な再認証が必要）。
+- `googlehealth.*` are **restricted scopes**. This project assumes **self-hosted personal use**:
+  each user brings **their own Google Cloud project and OAuth client**, keeps the consent screen in
+  **Testing** mode, and registers **themselves as a test user**.
+- **If you deploy this publicly for arbitrary users, you will need Google's separate security
+  assessment.** Reviewing Google's terms and policies is your own responsibility.
+- In Testing mode, **refresh tokens expire after 7 days** (periodic re-authentication required).
 
-## セキュリティ上の既知の制限
+## Known security limitations
 
-本実装は**個人によるセルフホスト利用**を想定しています。マルチユーザーで公開運用する場合は、
-最低限以下のハードニングを推奨します（PR 歓迎）:
+This implementation targets **personal, self-hosted use**. If you run it publicly for multiple
+users, the following hardening is recommended at minimum (PRs welcome):
 
-- OAuth の `state` は現状 base64 エンコードのみで**署名（改ざん検知・CSRF 対策）がありません**。
-- 認可時の**同意ダイアログを省略（自動承認）**しています。
-- Google のアクセストークン/リフレッシュトークンは KV / セッションに保存されます。運用環境の
-  アクセス管理・機密管理は利用者の責任です。
+- The OAuth `state` is only base64-encoded and **is not signed** (no tamper detection / CSRF protection).
+- The **consent dialog is skipped (auto-approved)** during authorization.
+- Google access tokens and refresh tokens are stored in KV / the session. Access control and secret
+  management in your environment are your responsibility.
 
-## 免責事項 / Disclaimer
+## Disclaimer
 
-- 本ソフトウェアは **MIT ライセンス**で「**現状のまま（AS IS）／無保証**」で提供されます。
-  利用によって生じたいかなる損害についても作者は責任を負いません（詳細は `LICENSE`）。
-- 本ソフトウェアが提供する健康データや、それに基づく Claude の応答は
-  **医療上の助言・診断・治療ではありません**。健康に関する判断は必ず医療専門家に相談してください。
-- 取得・保存される健康データはあなた自身の機微情報です。**データの取り扱い・プライバシー・
-  各種法令の遵守は利用者の責任**で行ってください。
+- This software is provided under the **MIT License**, **"AS IS" and without warranty of any kind**.
+  The author is not liable for any damages arising from its use (see `LICENSE`).
+- The health data this software provides, and any responses Claude bases on it, are
+  **not medical advice, diagnosis, or treatment**. Always consult a healthcare professional for
+  health-related decisions.
+- The health data that is fetched and stored is your own sensitive information. **Handling that
+  data, protecting your privacy, and complying with applicable laws are your responsibility.**
 
-## コントリビューション
+## Contributing
 
-Issue / PR を歓迎します。特にデータ型 ID の検証、対応データ型の追加、セキュリティ強化は歓迎です。
+Issues and PRs are welcome — especially for verifying data type IDs, adding supported data types,
+and strengthening security.
 
-## ライセンス
+## License
 
 [MIT License](./LICENSE) © 2026 yasuch
