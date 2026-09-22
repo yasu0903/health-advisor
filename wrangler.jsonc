@@ -32,6 +32,10 @@
   "vars": {
     // 秘密でない設定のみ。CLIENT_ID/SECRET と COOKIE_ENCRYPTION_KEY は
     // ローカルは .dev.vars、本番は `wrangler secret put` で設定する。
-    "GOOGLE_OAUTH_SCOPES": "openid email profile https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly https://www.googleapis.com/auth/googlehealth.sleep.readonly"
+    //
+    // nutrition.writeonly は食事ログの登録(log_meal)用。Google Health API には
+    // nutrition.readonly が存在せず、登録済み食事ログの参照(list_meal_logs)も
+    // このスコープで許可される。
+    "GOOGLE_OAUTH_SCOPES": "openid email profile https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly https://www.googleapis.com/auth/googlehealth.sleep.readonly https://www.googleapis.com/auth/googlehealth.nutrition.writeonly"
   }
 }
