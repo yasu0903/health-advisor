@@ -2,7 +2,7 @@
  * Google Health API (https://health.googleapis.com/v4) の薄いクライアント。
  *
  * - 認証: Bearer アクセストークン。401 の場合はリフレッシュトークンで再取得して1回だけ再試行。
- * - 一時エラー(429/5xx): 指数バックオフでリトライ。
+ * - 一時エラー(429/5xx): 読み取りは指数バックオフでリトライ。書き込みはしない(後述)。
  * - レート制限は公式に非公開のため、控えめなリトライ設定にしている。
  *
  * エンドポイントは公式 discovery ドキュメント
@@ -13,6 +13,7 @@
  *   reconcile   GET  .../dataTypes/{dataType}/dataPoints:reconcile    ?filter=...
  *   rollUp      POST .../dataTypes/{dataType}/dataPoints:rollUp       body {range, windowSize}
  *   dailyRollUp POST .../dataTypes/{dataType}/dataPoints:dailyRollUp  body {range, windowSizeDays}
+ *   create      POST .../dataTypes/{dataType}/dataPoints              body DataPoint
  *
  * list だけはコロン付きサブメソッドではなく、コレクションへの素の GET である
  * (`dataPoints:list` というルートは存在せず 404 になる)。
@@ -57,6 +58,12 @@ export interface ReadOptions {
   pageToken?: string;
   /** list 以外で指定可能なデータソース絞り込み */
   dataSourceFamily?: string;
+}
+
+/** リクエスト単位の挙動 */
+interface RequestOptions {
+  /** 429/5xx を指数バックオフで再試行するか（既定 true、書き込みは false） */
+  retryTransient?: boolean;
 }
 
 export interface GoogleHealthClientOptions {
@@ -138,6 +145,24 @@ export class GoogleHealthClient {
     return this.requestJson("POST", `${parent}/dataPoints:dailyRollUp`, {}, body);
   }
 
+  /**
+   * データポイントを 1 件作成する (users.dataTypes.dataPoints.create)。
+   * レスポンスは長時間実行オペレーション形式の Operation。
+   *
+   * 一時エラーでの自動リトライはしない。書き込みを再送すると、実際には成功していた
+   * 場合に二重登録になり得るため。呼び出し側で DataPoint.name を明示していれば
+   * 同じ名前での再実行は冪等になるので、リトライは呼び出し側の判断に委ねる。
+   */
+  async createDataPoint(dataType: string, dataPoint: unknown): Promise<unknown> {
+    return this.requestJson(
+      "POST",
+      `/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints`,
+      {},
+      dataPoint,
+      { retryTransient: false },
+    );
+  }
+
   /** 任意の v4 相対パスに対する GET（拡張用） */
   async get(relativePath: string, query: Record<string, string> = {}): Promise<unknown> {
     return this.requestJson("GET", relativePath, query);
@@ -148,16 +173,18 @@ export class GoogleHealthClient {
     relativePath: string,
     query: Record<string, string> = {},
     body?: unknown,
+    opts: RequestOptions = {},
   ): Promise<unknown> {
     const qs = new URLSearchParams(query).toString();
     const url = `${HEALTH_API_BASE}${relativePath}${qs ? `?${qs}` : ""}`;
-    return this.request(httpMethod, url, body);
+    return this.request(httpMethod, url, body, opts);
   }
 
   private async request(
     httpMethod: "GET" | "POST",
     url: string,
     body?: unknown,
+    opts: RequestOptions = {},
     attempt = 0,
   ): Promise<unknown> {
     const headers: Record<string, string> = {
@@ -180,18 +207,18 @@ export class GoogleHealthClient {
     if (res.status === 401 && attempt === 0 && this.refreshToken) {
       const refreshed = await this.refreshAccessToken();
       if (refreshed) {
-        return this.request(httpMethod, url, body, attempt + 1);
+        return this.request(httpMethod, url, body, opts, attempt + 1);
       }
     }
 
-    // 一時エラー: 指数バックオフでリトライ（最大3回）
-    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+    // 一時エラー: 指数バックオフでリトライ（最大3回）。書き込みは opts で無効化される。
+    if ((opts.retryTransient ?? true) && (res.status === 429 || res.status >= 500) && attempt < 3) {
       const retryAfter = Number(res.headers.get("retry-after"));
       const backoffMs = Number.isFinite(retryAfter) && retryAfter > 0
         ? retryAfter * 1000
         : 2 ** attempt * 500;
       await sleep(backoffMs);
-      return this.request(httpMethod, url, body, attempt + 1);
+      return this.request(httpMethod, url, body, opts, attempt + 1);
     }
 
     const detail = await safeReadBody(res);
