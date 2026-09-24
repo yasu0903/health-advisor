@@ -2,12 +2,12 @@
 
 [English](./README.md) | **日本語**
 
-自分の健康データ（Fitbit アカウント経由）を **Google Health API** から取得し、
-Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サーバーです。
+自分の健康データ（Fitbit アカウント経由）を **Google Health API** から取得して
+Claude（Desktop / Mobile / Web）に提供し、加えて食事ログの登録ができる MCP サーバーです。
 **Cloudflare Workers** にデプロイでき、**ローカル（`wrangler dev`）でも同じコードで動作**します。
 
 - データ源: **Fitbit アカウント**（Pixel Watch も可）
-- 取得対象: **アクティビティ全般 + 睡眠**（読み取り専用）
+- 取得対象: **アクティビティ全般 + 睡眠**（読み取り専用）、**食事ログ**（読み取り + 登録）
 - API: `https://health.googleapis.com/v4`（Google Fit REST API の後継。Fit は 2026 年末終了）
 
 > ⚠️ **Health Connect は Android 端末内オンリー（クラウド REST なし）** のため使いません。
@@ -20,7 +20,9 @@ Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サ�
 
 ---
 
-## 提供する MCP ツール（すべて読み取り専用）
+## 提供する MCP ツール
+
+`log_meal` だけが書き込みツールで、それ以外はすべて読み取り専用です。
 
 | ツール | 説明 |
 | --- | --- |
@@ -29,6 +31,8 @@ Claude（Desktop / Mobile / Web）に読み取り専用で提供する MCP サ�
 | `get_activity_datapoints` | 任意のアクティビティ型を柔軟に取得（`list`/`reconcile`/`rollUp`/`dailyRollUp`） |
 | `get_heart_rate` | 心拍データ（`list`/`rollUp`） |
 | `get_sleep_logs` | 睡眠ログ（睡眠ステージ含む） |
+| `log_meal` | 食事ログ（`nutrition-log`）を Google Health に**登録**（カロリー・栄養素つき） |
+| `list_meal_logs` | このサーバー経由で登録した食事ログを参照 |
 
 ---
 
@@ -62,6 +66,7 @@ npm install
    - スコープに以下を追加:
      - `.../auth/googlehealth.activity_and_fitness.readonly`
      - `.../auth/googlehealth.sleep.readonly`
+     - `.../auth/googlehealth.nutrition.writeonly`（食事ログ登録用）
      - `openid` / `email` / `profile`
 4. **OAuth クライアント ID** を作成（種別: **ウェブアプリケーション**）
    - 承認済みリダイレクト URI に**両方**を登録:
@@ -197,6 +202,16 @@ Claude に以下のように尋ねる:
 
 `get_daily_activity_summary` と `get_sleep_logs` が呼ばれ、Fitbit のデータが返れば成功です。
 
+食事ログを確認するには、以下のように尋ねます:
+
+> 今日の昼に鮭のおにぎり 180kcal を記録して。そのあと今日記録した分を見せて
+
+`log_meal` で登録し、`list_meal_logs` で読み戻せれば成功です。
+
+> ℹ️ 食事ログ機能の追加前に認可済みだった場合、既存のトークンには `nutrition.writeonly`
+> スコープが含まれないため `log_meal` は権限エラーになります。OAuth 同意画面に新しい
+> スコープを追加した上で、Claude 側でサーバーを再接続して再認可してください。
+
 ---
 
 ## 実装メモ・既知の注意点
@@ -211,6 +226,7 @@ Claude に以下のように尋ねる:
   | `reconcile` | GET | `.../dataPoints:reconcile` | `filter` クエリ |
   | `rollUp` | POST | `.../dataPoints:rollUp` | ボディ `{range, windowSize}` |
   | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | ボディ `{range, windowSizeDays}` |
+  | `create` | POST | `.../dataPoints` | ボディ `DataPoint`（`log_meal` が使用） |
 
   `list` はコロン付きサブメソッドではなくコレクションへの素の GET です
   (`dataPoints:list` というルートは存在せず 404 になります)。
@@ -218,9 +234,28 @@ Claude に以下のように尋ねる:
   AIP-160 のフィルタ式は snake_case (`heart_rate.sample_time.physical_time`) を使います。
   期間を持つ型は `{type}.interval.start_time`、瞬間値は `{type}.sample_time.physical_time`。
   **睡眠だけは開始時刻で絞り込めず** `sleep.interval.end_time` を使います。
+  **睡眠と ECG 以外のセッション型**（`nutrition-log` など）は
+  `{type}.interval.civil_start_time` でしか絞り込めません。これはタイムゾーンを持たない
+  **暦時刻**で、物理時刻は受け付けられないため、`list_meal_logs` はローカル日付を受け取ります。
 - **ページサイズ**: `sleep` と `exercise` は最大 25 件、その他のデータ型は最大 10000 件です。
 - **レート制限**: 公式に非公開のため、クライアントは指数バックオフ付きリトライを実装しています。
-  初期はツール呼び出し頻度を控えめに。
+  初期はツール呼び出し頻度を控えめに。ただし**書き込みは自動リトライしません**。
+  実際には成功していた create を再送すると二重登録になり得るためです。
+  `log_meal` に `dataPointId` を渡せば、同じ ID での再実行が冪等になります。
+- **食事ログの注意点**:
+  - API の食事ログは *identified food*（`food` に `Food` リソース名を渡す）か
+    *anonymous food*（`foodName` と栄養素を自分で埋める）のどちらかで作ります。
+    v4 には `Food` を検索・作成するメソッドが無いため、`log_meal` は通常
+    anonymous food として登録します。
+  - **anonymous food で登録したログは後から編集できません**（本サーバーの制限ではなく
+    API の仕様）。訂正したい場合は登録し直しになります。
+  - `log_meal` の `eatenAt` はタイムゾーン必須です。API のセッション区間が UTC オフセットを
+    必須としており、サーバー側で推測できないためです。
+  - たんぱく質には API 上の専用フィールドが無いため `nutrients[PROTEIN]` として送ります。
+  - **`googlehealth.nutrition.readonly` というスコープは存在しません。**
+    `nutrition-log` の読み取りは `nutrition.writeonly` で許可され、これは自アプリが
+    書き込んだデータを対象とします。したがって `list_meal_logs` で見えるのは
+    このサーバー経由で登録した食事ログで、他アプリで記録した食事は含まれません。
 - **Fitbit → Google 連携**: データが Google Health API に現れるには、
   Fitbit アカウントが Google と連携している必要がある場合があります。
 
@@ -230,8 +265,9 @@ Claude に以下のように尋ねる:
 src/
   index.ts          OAuthProvider の配線
   google-handler.ts Google OAuth (authorize / callback)
-  mcp.ts            McpAgent と読み取り専用ツール
+  mcp.ts            McpAgent とツール定義
   google-health.ts  Google Health API クライアント
+  nutrition.ts      食事ログ（nutrition-log）のペイロード組み立て
   types.ts          共有型
 scripts/
   setup.sh          初回セットアップ（依存インストール + .dev.vars 生成）

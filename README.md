@@ -3,11 +3,12 @@
 **English** | [日本語](./README_ja.md)
 
 An MCP server that reads your own health data (via your Fitbit account) from the
-**Google Health API** and exposes it read-only to Claude (Desktop / Mobile / Web).
+**Google Health API** and exposes it to Claude (Desktop / Mobile / Web), plus a single
+write tool for logging meals.
 It deploys to **Cloudflare Workers** and **runs locally from the same code** with `wrangler dev`.
 
 - Data source: **your Fitbit account** (Pixel Watch works too)
-- Coverage: **general activity + sleep** (read-only)
+- Coverage: **general activity + sleep** (read-only), **meal logs** (read + write)
 - API: `https://health.googleapis.com/v4` (successor to the Google Fit REST API, which shuts down at the end of 2026)
 
 > ⚠️ **Health Connect is on-device only on Android (no cloud REST API)**, so it is not used here.
@@ -20,7 +21,9 @@ It deploys to **Cloudflare Workers** and **runs locally from the same code** wit
 
 ---
 
-## MCP tools (all read-only)
+## MCP tools
+
+Everything is read-only except `log_meal`, the one tool that writes to Google Health.
 
 | Tool | Description |
 | --- | --- |
@@ -29,6 +32,8 @@ It deploys to **Cloudflare Workers** and **runs locally from the same code** wit
 | `get_activity_datapoints` | Flexible access to any activity type (`list` / `reconcile` / `rollUp` / `dailyRollUp`) |
 | `get_heart_rate` | Heart rate data (`list` / `rollUp`) |
 | `get_sleep_logs` | Sleep logs, including sleep stages |
+| `log_meal` | **Writes** a meal (`nutrition-log`) to Google Health, with calories and nutrients |
+| `list_meal_logs` | Meal logs previously written through this server |
 
 ---
 
@@ -62,6 +67,7 @@ npm install
    - Add these scopes:
      - `.../auth/googlehealth.activity_and_fitness.readonly`
      - `.../auth/googlehealth.sleep.readonly`
+     - `.../auth/googlehealth.nutrition.writeonly` (meal logging)
      - `openid` / `email` / `profile`
 4. Create an **OAuth client ID** (type: **Web application**)
    - Register **both** authorized redirect URIs:
@@ -200,6 +206,16 @@ Ask Claude something like:
 If `get_daily_activity_summary` and `get_sleep_logs` are called and return your Fitbit data,
 you're all set.
 
+To check meal logging, ask something like:
+
+> Log a salmon rice ball for lunch today, 180 kcal, and then show me what I logged today.
+
+`log_meal` writes the entry and `list_meal_logs` reads it back.
+
+> ℹ️ If you were already authorized before meal logging was added, your existing token does not
+> carry the `nutrition.writeonly` scope and `log_meal` will fail with a permission error.
+> Reconnect the server in Claude (and add the new scope to your OAuth consent screen) to re-consent.
+
 ---
 
 ## Implementation notes and known caveats
@@ -214,6 +230,7 @@ you're all set.
   | `reconcile` | GET | `.../dataPoints:reconcile` | `filter` query parameter |
   | `rollUp` | POST | `.../dataPoints:rollUp` | body `{range, windowSize}` |
   | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | body `{range, windowSizeDays}` |
+  | `create` | POST | `.../dataPoints` | body `DataPoint` (used by `log_meal`) |
 
   `list` is a plain GET on the collection, not a colon-suffixed sub-method
   (there is no `dataPoints:list` route — it returns 404).
@@ -221,9 +238,27 @@ you're all set.
   filter expressions use snake_case (`heart_rate.sample_time.physical_time`). Types with a duration
   use `{type}.interval.start_time`; instantaneous types use `{type}.sample_time.physical_time`.
   **Sleep is the exception**: it cannot be filtered by start time, so `sleep.interval.end_time` is used.
+  **Session types other than sleep and ECG** (such as `nutrition-log`) can only be filtered by
+  `{type}.interval.civil_start_time`, which is a *civil* (timezone-less) date — physical timestamps
+  are not accepted there, so `list_meal_logs` takes local calendar dates.
 - **Page size**: `sleep` and `exercise` are capped at 25 items; other data types allow up to 10000.
 - **Rate limits**: they are not publicly documented, so the client implements retries with
-  exponential backoff. Keep tool calls infrequent at first.
+  exponential backoff. Keep tool calls infrequent at first. **Writes are never retried
+  automatically**, since a re-sent create could double-log a meal that actually succeeded.
+  Pass `dataPointId` to `log_meal` to make a retry idempotent.
+- **Meal logging caveats**:
+  - The API takes a nutrition log either as an *identified food* (a reference to a `Food`
+    resource, via `food`) or as an *anonymous food* (`foodName` plus nutrients you supply).
+    v4 exposes no method to search or create `Food` resources, so `log_meal` normally writes
+    anonymous foods.
+  - **Anonymous food logs cannot be edited afterwards** (that is an API restriction, not a
+    limitation of this server), so a correction means logging the meal again.
+  - `log_meal` requires a timezone on `eatenAt`, because the API's session interval requires an
+    explicit UTC offset and it cannot be guessed server-side.
+  - Protein has no dedicated field in the API; it is sent as `nutrients[PROTEIN]`.
+  - There is **no `googlehealth.nutrition.readonly` scope**. Reads of `nutrition-log` are
+    authorized by `nutrition.writeonly`, which covers the data this app itself wrote — so
+    `list_meal_logs` shows meals logged through this server, not meals logged in other apps.
 - **Fitbit → Google linkage**: your Fitbit account may need to be linked to Google before its data
   shows up in the Google Health API.
 
@@ -233,8 +268,9 @@ you're all set.
 src/
   index.ts          OAuthProvider wiring
   google-handler.ts Google OAuth (authorize / callback)
-  mcp.ts            McpAgent and the read-only tools
+  mcp.ts            McpAgent and the tool definitions
   google-health.ts  Google Health API client
+  nutrition.ts      meal log (nutrition-log) payload builder
   types.ts          shared types
 scripts/
   setup.sh          first-time setup (dependencies + .dev.vars)
