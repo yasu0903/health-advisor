@@ -3,11 +3,11 @@
 [English](./README.md) | **日本語**
 
 自分の健康データ（Fitbit アカウント経由）を **Google Health API** から取得して
-Claude（Desktop / Mobile / Web）に提供し、加えて食事ログの登録ができる MCP サーバーです。
+Claude（Desktop / Mobile / Web）に提供し、加えて食事ログの登録・削除ができる MCP サーバーです。
 **Cloudflare Workers** にデプロイでき、**ローカル（`wrangler dev`）でも同じコードで動作**します。
 
 - データ源: **Fitbit アカウント**（Pixel Watch も可）
-- 取得対象: **アクティビティ全般 + 睡眠**（読み取り専用）、**食事ログ**（読み取り + 登録）
+- 取得対象: **アクティビティ全般 + 睡眠**（読み取り専用）、**食事ログ**（読み取り + 登録 + 削除）
 - API: `https://health.googleapis.com/v4`（Google Fit REST API の後継。Fit は 2026 年末終了）
 
 > ⚠️ **Health Connect は Android 端末内オンリー（クラウド REST なし）** のため使いません。
@@ -22,7 +22,7 @@ Claude（Desktop / Mobile / Web）に提供し、加えて食事ログの登録�
 
 ## 提供する MCP ツール
 
-`log_meal` だけが書き込みツールで、それ以外はすべて読み取り専用です。
+`log_meal` と `delete_meal_logs` だけが書き込みツールで、それ以外はすべて読み取り専用です。
 
 | ツール | 説明 |
 | --- | --- |
@@ -33,6 +33,7 @@ Claude（Desktop / Mobile / Web）に提供し、加えて食事ログの登録�
 | `get_sleep_logs` | 睡眠ログ（睡眠ステージ含む） |
 | `log_meal` | 食事ログ（`nutrition-log`）を Google Health に**登録**（カロリー・栄養素つき） |
 | `list_meal_logs` | このサーバー経由で登録した食事ログを参照 |
+| `delete_meal_logs` | 食事ログを**削除**（`list_meal_logs` が返すリソース名か `dataPointId` で指定） |
 
 ---
 
@@ -206,7 +207,11 @@ Claude に以下のように尋ねる:
 
 > 今日の昼に鮭のおにぎり 180kcal を記録して。そのあと今日記録した分を見せて
 
-`log_meal` で登録し、`list_meal_logs` で読み戻せれば成功です。
+`log_meal` で登録し、`list_meal_logs` で読み戻せれば成功です。続けて
+
+> さっき記録したおにぎりを削除して
+
+と頼むと `delete_meal_logs` で削除されます（`list_meal_logs` で消えたことを確認できます）。
 
 > ℹ️ 食事ログ機能の追加前に認可済みだった場合、既存のトークンには `nutrition.writeonly`
 > スコープが含まれないため `log_meal` は権限エラーになります。OAuth 同意画面に新しい
@@ -227,6 +232,7 @@ Claude に以下のように尋ねる:
   | `rollUp` | POST | `.../dataPoints:rollUp` | ボディ `{range, windowSize}` |
   | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | ボディ `{range, windowSizeDays}` |
   | `create` | POST | `.../dataPoints` | ボディ `DataPoint`（`log_meal` が使用） |
+  | `batchDelete` | POST | `.../dataPoints:batchDelete` | ボディ `{names}`（`delete_meal_logs` が使用） |
 
   `list` はコロン付きサブメソッドではなくコレクションへの素の GET です
   (`dataPoints:list` というルートは存在せず 404 になります)。
@@ -248,7 +254,7 @@ Claude に以下のように尋ねる:
     v4 には `Food` を検索・作成するメソッドが無いため、`log_meal` は通常
     anonymous food として登録します。
   - **anonymous food で登録したログは後から編集できません**（本サーバーの制限ではなく
-    API の仕様）。訂正したい場合は登録し直しになります。
+    API の仕様）。訂正したい場合は `delete_meal_logs` で削除してから登録し直してください。
   - `log_meal` の `eatenAt` はタイムゾーン必須です。API のセッション区間が UTC オフセットを
     必須としており、サーバー側で推測できないためです。
   - たんぱく質には API 上の専用フィールドが無いため `nutrients[PROTEIN]` として送ります。
@@ -256,6 +262,8 @@ Claude に以下のように尋ねる:
     `nutrition-log` の読み取りは `nutrition.writeonly` で許可され、これは自アプリが
     書き込んだデータを対象とします。したがって `list_meal_logs` で見えるのは
     このサーバー経由で登録した食事ログで、他アプリで記録した食事は含まれません。
+  - `delete_meal_logs` が受け付けるのは `nutrition-log` のデータポイントだけです。
+    他のデータ型のリソース名は API を呼ぶ前に拒否します。削除は取り消せません。
 - **Fitbit → Google 連携**: データが Google Health API に現れるには、
   Fitbit アカウントが Google と連携している必要がある場合があります。
 

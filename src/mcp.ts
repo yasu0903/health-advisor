@@ -3,8 +3,9 @@
  *
  * 大半のツールは Google Health API の読み取りメソッド
  * (list / reconcile / rollUp / dailyRollUp) をラップしたもの。
- * 唯一の書き込みツールが `log_meal` で、dataPoints.create により
- * `nutrition-log` (食事ログ) を登録する。
+ * 書き込みツールは食事ログ(`nutrition-log`)用の 2 つだけで、
+ * `log_meal` が dataPoints.create で登録し、`delete_meal_logs` が
+ * dataPoints.batchDelete で削除する。
  */
 
 import { McpAgent } from "agents/mcp";
@@ -26,6 +27,7 @@ import {
   NUTRIENTS,
   NUTRITION_LOG_DATA_TYPE,
   offsetDateTimeSchema,
+  toNutritionLogName,
 } from "./nutrition.ts";
 
 /**
@@ -71,8 +73,8 @@ const DATA_TYPES: DataTypeDef[] = [
   // --- 睡眠 ---
   { key: "sleep", dataType: "sleep", description: "睡眠ログ(睡眠ステージ含む)", methods: ["list", "reconcile"], timeField: "sleep", category: "sleep" },
   // --- 栄養 ---
-  // 登録は log_meal (dataPoints.create)、参照は list。読み取りも nutrition.writeonly
-  // スコープで許可される(nutrition.readonly というスコープは存在しない)。
+  // 登録は log_meal (dataPoints.create)、削除は delete_meal_logs (batchDelete)、参照は list。
+  // 読み取りも nutrition.writeonly スコープで許可される(nutrition.readonly というスコープは存在しない)。
   { key: "nutrition-log", dataType: NUTRITION_LOG_DATA_TYPE, description: "食事ログ(log_meal で登録したもの)", methods: ["list"], timeField: "session", category: "nutrition" },
 ];
 
@@ -269,7 +271,7 @@ export class HealthMCP extends McpAgent<Env, unknown, Props> {
       },
     );
 
-    // 6. 食事ログの登録（唯一の書き込みツール）
+    // 6. 食事ログの登録
     this.server.tool(
       "log_meal",
       [
@@ -277,7 +279,7 @@ export class HealthMCP extends McpAgent<Env, unknown, Props> {
         "食べ物の名前と、分かる範囲の栄養情報(カロリー・PFC など)を渡す。",
         "eatenAt はタイムゾーン付きで指定する必要がある(API が UTC オフセットを必須とするため)。",
         "登録済みの内容は list_meal_logs で確認できる。",
-        "なお、手入力した食事ログは API 上あとから編集できない(登録し直しになる)。",
+        "なお、手入力した食事ログは API 上あとから編集できない(delete_meal_logs で削除して登録し直す)。",
       ].join(" "),
       {
         foodName: z
@@ -371,6 +373,45 @@ export class HealthMCP extends McpAgent<Env, unknown, Props> {
           `${startDate}T00:00:00`,
           `${addDays(endDate, 1)}T00:00:00`,
         );
+      },
+    );
+
+    // 8. 食事ログの削除
+    this.server.tool(
+      "delete_meal_logs",
+      [
+        "登録済みの食事ログ(nutrition-log)を削除する。取り消しはできない。",
+        "削除対象は list_meal_logs が返す各データポイントの name(リソース名)か、",
+        "log_meal に渡した dataPointId で指定する。",
+        "誤登録の取り消しや、内容を訂正するための登録し直しに使う。",
+      ].join(" "),
+      {
+        dataPoints: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(10000)
+          .describe(
+            "削除する食事ログのリソース名 (例: users/me/dataTypes/nutrition-log/dataPoints/abc123) またはデータポイント ID の配列",
+          ),
+      },
+      { destructiveHint: true, idempotentHint: true },
+      async ({ dataPoints }) => {
+        let names: string[];
+        try {
+          names = [...new Set(dataPoints.map(toNutritionLogName))];
+        } catch (err) {
+          // nutrition-log 以外を指していたら API を叩く前に返す
+          return jsonResult({ deleted: false, ...errorToObject(err) });
+        }
+        try {
+          const operation = await this.client().batchDeleteDataPoints(
+            NUTRITION_LOG_DATA_TYPE,
+            names,
+          );
+          return jsonResult({ deleted: true, dataPointNames: names, operation });
+        } catch (err) {
+          return jsonResult({ deleted: false, dataPointNames: names, ...errorToObject(err) });
+        }
       },
     );
   }
