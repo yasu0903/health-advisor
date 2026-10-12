@@ -131,7 +131,7 @@ URL に `http://localhost:8787/mcp` を指定して接続 → Google のログ�
   "mcpServers": {
     "health-advisor": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8787/sse"]
+      "args": ["mcp-remote", "http://localhost:8787/mcp"]
     }
   }
 }
@@ -189,7 +189,7 @@ npm run deploy
 1. Google Cloud の OAuth クライアントの承認済みリダイレクト URI に
    `https://<your-worker>.workers.dev/callback` が入っていることを確認
 2. **Claude Mobile / Web**: 設定 → コネクタ → **カスタムコネクタを追加** →
-   `https://<your-worker>.workers.dev/sse` を登録 → OAuth ログイン
+   `https://<your-worker>.workers.dev/mcp` を登録 → OAuth ログイン
 3. **Claude Desktop（本番接続）**: 上記 config の URL を本番 URL に変更
 
 ---

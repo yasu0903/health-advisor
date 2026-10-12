@@ -166,7 +166,7 @@ cat <<NEXT
   1. OAuth クライアントの承認済みリダイレクト URI に登録
        $worker_url/callback
   2. Claude Mobile / Web: 設定 → コネクタ → カスタムコネクタを追加
-       $worker_url/sse
+       $worker_url/mcp
 ────────────────────────────────────────────────────────────
 
 NEXT

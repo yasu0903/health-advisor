@@ -134,7 +134,7 @@ Add this in Settings → Developer → Edit Config, then restart:
   "mcpServers": {
     "health-advisor": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8787/sse"]
+      "args": ["mcp-remote", "http://localhost:8787/mcp"]
     }
   }
 }
@@ -192,7 +192,7 @@ After deploying:
 1. Make sure `https://<your-worker>.workers.dev/callback` is listed as an authorized redirect URI
    on your Google Cloud OAuth client
 2. **Claude Mobile / Web**: Settings → Connectors → **Add custom connector** →
-   register `https://<your-worker>.workers.dev/sse` → sign in with OAuth
+   register `https://<your-worker>.workers.dev/mcp` → sign in with OAuth
 3. **Claude Desktop (production)**: change the URL in the config above to your production URL
 
 ---
