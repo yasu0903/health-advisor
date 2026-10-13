@@ -14,6 +14,7 @@
  *   rollUp      POST .../dataTypes/{dataType}/dataPoints:rollUp       body {range, windowSize}
  *   dailyRollUp POST .../dataTypes/{dataType}/dataPoints:dailyRollUp  body {range, windowSizeDays}
  *   create      POST .../dataTypes/{dataType}/dataPoints              body DataPoint
+ *   batchDelete POST .../dataTypes/{dataType}/dataPoints:batchDelete  body {names}
  *
  * list だけはコロン付きサブメソッドではなく、コレクションへの素の GET である
  * (`dataPoints:list` というルートは存在せず 404 になる)。
@@ -159,6 +160,24 @@ export class GoogleHealthClient {
       `/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints`,
       {},
       dataPoint,
+      { retryTransient: false },
+    );
+  }
+
+  /**
+   * データポイントをまとめて削除する (users.dataTypes.dataPoints.batchDelete)。
+   * names は削除対象の DataPoint リソース名で、1 リクエスト最大 10000 件。
+   * parent を指定する場合、names の親はすべて parent と一致している必要がある。
+   * レスポンスは create と同じく Operation。
+   *
+   * create と同様、書き込み系なので一時エラーでの自動リトライはしない。
+   */
+  async batchDeleteDataPoints(dataType: string, names: string[]): Promise<unknown> {
+    return this.requestJson(
+      "POST",
+      `/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:batchDelete`,
+      {},
+      { names },
       { retryTransient: false },
     );
   }

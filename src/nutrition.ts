@@ -221,3 +221,23 @@ export function buildNutritionLogDataPoint(input: MealLogInput): Record<string, 
 export function dataPointName(dataPointId: string): string {
   return `users/me/dataTypes/${NUTRITION_LOG_DATA_TYPE}/dataPoints/${dataPointId}`;
 }
+
+/** list_meal_logs が返す DataPoint.name の形式。{user} は "me" か数値の Health User ID。 */
+const NUTRITION_LOG_NAME_RE = new RegExp(
+  `^users/[^/]+/dataTypes/${NUTRITION_LOG_DATA_TYPE}/dataPoints/([^/:]+)$`,
+);
+
+/**
+ * 削除対象の指定(リソース名 or データポイント ID)を `users/me/...` 形式のリソース名に正規化する。
+ *
+ * batchDelete は parent(users/me/dataTypes/nutrition-log) と names の親の一致を求めるため、
+ * {user} 部分は "me" にそろえる。nutrition-log 以外のデータ型の名前は誤削除を防ぐため拒否する。
+ */
+export function toNutritionLogName(nameOrId: string): string {
+  const match = NUTRITION_LOG_NAME_RE.exec(nameOrId);
+  if (match) return dataPointName(match[1]);
+  if (/^[^/:]+$/.test(nameOrId)) return dataPointName(nameOrId);
+  throw new Error(
+    `食事ログ(nutrition-log)のリソース名またはデータポイント ID を指定してください: ${nameOrId}`,
+  );
+}

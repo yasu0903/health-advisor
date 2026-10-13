@@ -3,12 +3,12 @@
 **English** | [日本語](./README_ja.md)
 
 An MCP server that reads your own health data (via your Fitbit account) from the
-**Google Health API** and exposes it to Claude (Desktop / Mobile / Web), plus a single
-write tool for logging meals.
+**Google Health API** and exposes it to Claude (Desktop / Mobile / Web), plus write tools for
+logging and deleting meals.
 It deploys to **Cloudflare Workers** and **runs locally from the same code** with `wrangler dev`.
 
 - Data source: **your Fitbit account** (Pixel Watch works too)
-- Coverage: **general activity + sleep** (read-only), **meal logs** (read + write)
+- Coverage: **general activity + sleep** (read-only), **meal logs** (read + write + delete)
 - API: `https://health.googleapis.com/v4` (successor to the Google Fit REST API, which shuts down at the end of 2026)
 
 > ⚠️ **Health Connect is on-device only on Android (no cloud REST API)**, so it is not used here.
@@ -23,7 +23,7 @@ It deploys to **Cloudflare Workers** and **runs locally from the same code** wit
 
 ## MCP tools
 
-Everything is read-only except `log_meal`, the one tool that writes to Google Health.
+Everything is read-only except `log_meal` and `delete_meal_logs`, the two tools that write to Google Health.
 
 | Tool | Description |
 | --- | --- |
@@ -34,6 +34,7 @@ Everything is read-only except `log_meal`, the one tool that writes to Google He
 | `get_sleep_logs` | Sleep logs, including sleep stages |
 | `log_meal` | **Writes** a meal (`nutrition-log`) to Google Health, with calories and nutrients |
 | `list_meal_logs` | Meal logs previously written through this server |
+| `delete_meal_logs` | **Deletes** meal logs, by the resource names `list_meal_logs` returns or by `dataPointId` |
 
 ---
 
@@ -210,7 +211,11 @@ To check meal logging, ask something like:
 
 > Log a salmon rice ball for lunch today, 180 kcal, and then show me what I logged today.
 
-`log_meal` writes the entry and `list_meal_logs` reads it back.
+`log_meal` writes the entry and `list_meal_logs` reads it back. Then ask
+
+> Delete the rice ball I just logged.
+
+and `delete_meal_logs` removes it (check with `list_meal_logs` that it is gone).
 
 > ℹ️ If you were already authorized before meal logging was added, your existing token does not
 > carry the `nutrition.writeonly` scope and `log_meal` will fail with a permission error.
@@ -231,6 +236,7 @@ To check meal logging, ask something like:
   | `rollUp` | POST | `.../dataPoints:rollUp` | body `{range, windowSize}` |
   | `dailyRollUp` | POST | `.../dataPoints:dailyRollUp` | body `{range, windowSizeDays}` |
   | `create` | POST | `.../dataPoints` | body `DataPoint` (used by `log_meal`) |
+  | `batchDelete` | POST | `.../dataPoints:batchDelete` | body `{names}` (used by `delete_meal_logs`) |
 
   `list` is a plain GET on the collection, not a colon-suffixed sub-method
   (there is no `dataPoints:list` route — it returns 404).
@@ -252,13 +258,16 @@ To check meal logging, ask something like:
     v4 exposes no method to search or create `Food` resources, so `log_meal` normally writes
     anonymous foods.
   - **Anonymous food logs cannot be edited afterwards** (that is an API restriction, not a
-    limitation of this server), so a correction means logging the meal again.
+    limitation of this server), so a correction means deleting the entry with `delete_meal_logs`
+    and logging the meal again.
   - `log_meal` requires a timezone on `eatenAt`, because the API's session interval requires an
     explicit UTC offset and it cannot be guessed server-side.
   - Protein has no dedicated field in the API; it is sent as `nutrients[PROTEIN]`.
   - There is **no `googlehealth.nutrition.readonly` scope**. Reads of `nutrition-log` are
     authorized by `nutrition.writeonly`, which covers the data this app itself wrote — so
     `list_meal_logs` shows meals logged through this server, not meals logged in other apps.
+  - `delete_meal_logs` only accepts `nutrition-log` data points; names of any other data type are
+    rejected before the API is called. Deletion cannot be undone.
 - **Fitbit → Google linkage**: your Fitbit account may need to be linked to Google before its data
   shows up in the Google Health API.
 
